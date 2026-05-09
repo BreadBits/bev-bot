@@ -7,18 +7,55 @@ import json
 import datetime
 import random
 
-DISCORD_TOKEN = os.environ('discordkey')
 
-def load_data():
-    try:
-        with open("bev.json","r") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
+import sqlite3
 
-def save_data(data):
-    with open("bev.json","w") as f:
-        json.dump(data, f, indent=4)
+conn = sqlite3.connect("bev.db")
+cursor = conn.cursor()
+
+print("DB CREATED AT:", os.path.abspath("bev.db"))
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS users (
+    user_id TEXT PRIMARY KEY,
+    fav_bev TEXT,
+    fav_spot TEXT,
+    rank_name TEXT,
+    total_bevs INTEGER DEFAULT 0
+)
+""")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT,
+    guild_id TEXT,
+    name TEXT,
+    place TEXT,
+    rating INTEGER,
+    time TEXT
+)
+""")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS server_places (
+    guild_id TEXT,
+    place TEXT,
+    visits INTEGER,
+    UNIQUE(guild_id, place)
+)
+""")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS place_regions (
+    guild_id TEXT,
+    place TEXT,
+    region TEXT,
+    UNIQUE(guild_id, place, region)
+)
+""")
+
+conn.commit()
 
 load_dotenv()
 token = os.getenv('DISCORD_TOKEN')
@@ -27,7 +64,6 @@ handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='w'
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
-data = load_data()
 
 bot = commands.Bot(command_prefix='!', intents=intents)
 
@@ -91,54 +127,43 @@ async def bev(ctx,*args):
     place = args[-2].lower()
     bevname = " ".join(args[:-2])
 
-    global data
     user_id = str(ctx.author.id)
     guild_id = str(ctx.guild.id)
-
-    data.setdefault("users", {})
-    data.setdefault("servers",{})
-    data["servers"].setdefault(guild_id,{"places":{}})
-
-    user = data["users"].setdefault(user_id,{
-        "profile":{
-            "fav_bev": None,
-            "fav_spot": None,
-            "rank_name": "Newbie"
-        },
-        "stats": {"total_bevs": 0},
-        "places": {},
-        "entries": [],
-    })
-
-    server = data["servers"][guild_id]
-
-    entry_number = len(user["entries"]) + 1
     current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    user["entries"].append({
-        "id": entry_number,
-        "name": bevname,
-        "place": place,
-        "rating": rating,
-        "time": current_time
-    })
+    cursor.execute("""
+        INSERT INTO users (user_id, fav_bev, fav_spot, rank_name, total_bevs)
+        VALUES (?, ?, ?, ?, 0)
+        ON CONFLICT(user_id) DO NOTHING
+    """, (user_id, None, None, "Newbie"))
 
-    user["stats"]["total_bevs"] += 1
-    total = user["stats"]["total_bevs"]
-    user["places"][place] = user["places"].get(place, 0) + 1
+    cursor.execute("""
+        INSERT INTO entries (user_id, guild_id, name, place, rating, time)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (user_id, guild_id, bevname, place, rating, current_time))
 
-    if place not in server["places"]:
-        server["places"][place] = {
-            "visits": 0,
-            "regions": []
-        }
+    cursor.execute("""
+        UPDATE users
+        SET total_bevs = COALESCE(total_bevs, 0) + 1,
+            fav_bev = ?,
+            fav_spot = ?
+        WHERE user_id = ?
+    """, (bevname, place, user_id))
 
-    server["places"][place]["visits"] += 1
+    cursor.execute("""
+        INSERT INTO server_places (guild_id, place, visits)
+        VALUES (?, ?, 1)
+        ON CONFLICT(guild_id, place)
+        DO UPDATE SET visits = visits + 1
+    """, (guild_id, place))
 
-    user["profile"]["fav_bev"] = bevname
-    user["profile"]["fav_spot"] = place
+    conn.commit()
 
-    save_data(data)
+    cursor.execute("""
+        SELECT total_bevs FROM users WHERE user_id = ?
+    """, (user_id,))
+
+    total = cursor.fetchone()[0]
 
     await ctx.send(
         f"{ctx.author.mention} logged {bevname} from {place} ({rating}/20)\n"
@@ -146,27 +171,24 @@ async def bev(ctx,*args):
     )
 
 @bot.command(aliases=['d','remove'])
-async def delete(ctx,arg1):
-    global data
+async def delete(ctx, arg1):
     user_id = str(ctx.author.id)
     guild_id = str(ctx.guild.id)
 
-    if "users" not in data or user_id not in data["users"]:
-        await ctx.send("No entries found.")
-        return
+    cursor.execute("""
+        SELECT id, name, place FROM entries
+        WHERE user_id = ? AND guild_id = ?
+        ORDER BY id DESC
+    """, (user_id, guild_id))
 
-    user = data["users"][user_id]
-    entries = user["entries"]
+    entries = cursor.fetchall()
 
     if not entries:
         await ctx.send("No entries found.")
         return
 
-    removed = None
-
     if arg1.lower() == "last":
-        removed = entries.pop()
-        entry_id_used = removed["id"]
+        entry = entries[0]
     else:
         try:
             entry_id = int(arg1)
@@ -174,82 +196,57 @@ async def delete(ctx,arg1):
             await ctx.send("Use `!d last` or `!d <id>`")
             return
 
-        for i, e in enumerate(entries):
-            if e["id"] == entry_id:
-                removed = entries.pop(i)
-                entry_id_used = entry_id
+        entry = None
+        for e in entries:
+            if e[0] == entry_id:
+                entry = e
                 break
 
-    if not removed:
-        await ctx.send("No entries found.")
-        return
+        if not entry:
+            await ctx.send("No entry found.")
+            return
 
+    entry_id, name, place = entry
 
+    cursor.execute("DELETE FROM entries WHERE id = ?", (entry_id,))
 
-    for i, e in enumerate(entries, start=1):
-        e["id"] = i
+    cursor.execute("""
+        UPDATE users
+        SET total_bevs = MAX(total_bevs - 1, 0)
+        WHERE user_id = ?
+    """, (user_id,))
 
-    user["stats"]["total_bevs"] -= 1
+    cursor.execute("""
+        UPDATE server_places
+        SET visits = MAX(visits - 1, 0)
+        WHERE guild_id = ? AND place = ?
+    """, (guild_id, place))
 
-    place = removed["place"]
+    conn.commit()
 
-    if place in user["places"]:
-        user["places"][place] -= 1
+    await ctx.send(f"Deleted entry #{entry_id} {name} from {place}")
 
-        if user["places"][place] <= 0:
-            del user["places"][place]
-
-    if guild_id in data["servers"]:
-        server_places = data["servers"][guild_id]["places"]
-
-        if place in server_places:
-            server_places[place]["visits"] -= 1
-
-            if server_places[place]["visits"] <= 0:
-                del server_places[place]
-
-    save_data(data)
-
-    await ctx.send(
-        f"Deleted entry #{entry_id_used} "
-        f"{removed['name']} from {removed['place']}"
-    )
-
-#local leaderboard
 @bot.command(aliases=['lb'])
 async def leaderboard(ctx):
-    global data
 
+    cursor.execute("""
+        SELECT user_id, total_bevs
+        FROM users
+        ORDER BY total_bevs DESC
+        LIMIT 10
+    """)
 
-    if "users" not in data:
+    rows = cursor.fetchall()
+
+    if not rows:
         await ctx.send("No data yet.")
         return
 
-    scores = {}
-
-    for user_id, user_data in data["users"].items():
-        member = ctx.guild.get_member(int(user_id))
-
-        if member is None:
-            continue
-
-        total_bevs = user_data.get("stats", {}).get("total_bevs", 0)
-        scores[user_id] = total_bevs
-
-    sorted_scores = sorted(
-        scores.items(),
-        key=lambda x: x[1],
-        reverse=True
-    )
-
     lbmessage = "Local Bev Leaderboard (Total Bevs)\n"
-    personal_rank = 0;
-    personal_count = 0;
 
-    for i, (user_id, count) in enumerate(sorted_scores[:10], start=1):
+    for i, (user_id, count) in enumerate(rows, start=1):
         member = ctx.guild.get_member(int(user_id))
-        if member is None:
-            continue
+        name = member.name if member else "Unknown"
 
         if member == ctx.author:
             lbmessage += f"{i}. {member.name} — {count} :star:\n"
@@ -260,66 +257,58 @@ async def leaderboard(ctx):
 
     lbmessage += f"===================\n{personal_rank}. {ctx.author} — {personal_count} "
 
-    lbembed = discord.Embed(color=5763719,title="Leaderboard",description=lbmessage)
+    lbembed = discord.Embed(color=5763719, title="Leaderboard", description=lbmessage)
     leaderb = await ctx.send(embed=lbembed)
 
 @bot.command()
 async def roll(ctx, region):
-    global data
     guild_id = str(ctx.guild.id)
+    region = region.lower()
 
-    if "servers" not in data or guild_id not in data["servers"]:
-        await ctx.send("No places found.")
-        return
+    cursor.execute("""
+        SELECT place
+        FROM place_regions
+        WHERE guild_id = ? AND region = ?
+    """, (guild_id, region))
 
-    places = data["servers"][guild_id]["places"]
+    results = cursor.fetchall()
 
-    matches = [
-        name for name, info in places.items()
-        if region in info["regions"]
-    ]
-
-    if not matches:
+    if not results:
         await ctx.send("No places in this region.")
         return
 
-    choice = random.choice(matches)
+    choice = random.choice([r[0] for r in results])
 
     await ctx.send(
-        f" Rolling from **{region}**...\n"
-        f" You got: **{choice}**"
+        f"Rolling from **{region}**...\n"
+        f"You got: **{choice}**"
     )
 
 @bot.command()
 async def rolladd(ctx, region, *places):
-    global data
-
+    guild_id = str(ctx.guild.id)
     region = region.lower()
 
-    guild_id = str(ctx.guild.id)
-
-    data.setdefault("servers", {})
-    data["servers"].setdefault(guild_id, {"places": {}})
-
-    server = data["servers"][guild_id]
+    if not places:
+        await ctx.send("Provide at least one place.")
+        return
 
     added = []
+
     for place in places:
         place = place.lower()
 
-        if place not in server["places"]:
-            server["places"][place] = {
-                "visits": 0,
-                "regions": []
-            }
+        # insert region mapping (ignore duplicates)
+        cursor.execute("""
+            INSERT INTO place_regions (guild_id, place, region)
+            VALUES (?, ?, ?)
+            ON CONFLICT(guild_id, place, region) DO NOTHING
+        """, (guild_id, place, region))
 
-        if region not in server["places"][place]["regions"]:
-            server["places"][place]["regions"].append(region)
-            added.append(place)
+        added.append(place)
 
-    save_data(data)
+    conn.commit()
 
-    await ctx.send(
-        f"➕ Added to **{region}**: {', '.join(added)}")
+    await ctx.send(f"Added to **{region}**: {', '.join(added)}")
 
 bot.run(token, log_handler=handler, log_level=logging.DEBUG)
