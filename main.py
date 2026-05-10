@@ -7,14 +7,26 @@ import json
 import datetime
 import random
 
-
 import sqlite3
+
+import quests
+
+load_dotenv()
+token = os.getenv('DISCORD_TOKEN')
+
+handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='w')
+intents = discord.Intents.default()
+intents.message_content = True
+intents.members = True
+
+bot = commands.Bot(command_prefix='!', intents=intents)
 
 conn = sqlite3.connect("bev.db")
 cursor = conn.cursor()
 
 print("DB CREATED AT:", os.path.abspath("bev.db"))
 
+#tables
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS users (
     user_id TEXT PRIMARY KEY,
@@ -55,18 +67,26 @@ CREATE TABLE IF NOT EXISTS place_regions (
 )
 """)
 
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS quests (
+    quest_id TEXT PRIMARY KEY,
+    title TEXT,
+    description TEXT
+)
+""")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS user_quests (
+    user_id TEXT,
+    quest_name TEXT,
+    completed_at INTEGER,
+    UNIQUE(user_id, quest_name)
+)
+""")
+
 conn.commit()
 
-load_dotenv()
-token = os.getenv('DISCORD_TOKEN')
-
-handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='w')
-intents = discord.Intents.default()
-intents.message_content = True
-intents.members = True
-
-bot = commands.Bot(command_prefix='!', intents=intents)
-
+#pre added data
 REGIONS = {
     "socal": [
         "smokingtiger",
@@ -83,6 +103,10 @@ REGIONS = {
     ]
 }
 
+conn.commit()
+
+
+#events
 @bot.event
 async def on_ready():
     print(f"We are ready to go in, {bot.user.name}")
@@ -195,6 +219,18 @@ async def bev(ctx,*args):
         f"{ctx.author.mention} logged {bevname} from {place} ({rating}/20)\n"
         f"Total Drinks: {total}"
     )
+
+    #quests
+    unlocked_quests = quests.check_all_quests(cursor, conn, user_id)
+    for quest_name in unlocked_quests:
+        desc = quests.QUESTS[quest_name]["description"]
+        reward = quests.QUESTS[quest_name]["reward_text"]
+
+        await ctx.send(
+            f"🏆 Quest Unlocked: {quest_name}\n"
+            f"{desc}\n"
+            f"{reward}"
+        )
 
 @bot.command(aliases=['d','remove'])
 async def delete(ctx, arg1):
