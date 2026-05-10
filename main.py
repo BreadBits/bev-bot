@@ -409,7 +409,7 @@ async def bevreport(ctx, year: int = None):
     elements = []
 
     # TITLE
-    title = Paragraph(f"<b>BEV REPORT {year}</b>", title_style)
+    title = Paragraph(f"<b>{ctx.author.name.upper()} BEV REPORT {year}</b>", title_style)
     elements.append(title)
     elements.append(Spacer(1, 20))
 
@@ -451,5 +451,111 @@ async def bevreport(ctx, year: int = None):
     file = discord.File(buffer, filename=f"bevreport_{year}.pdf")
 
     await ctx.send(file=file)
+
+#testing commands
+@bot.command()
+async def bevpopulate(ctx):
+    user_id = str(ctx.author.id)
+    guild_id = str(ctx.guild.id)
+
+    if ctx.author.name != "breadbit":
+        await ctx.send("Not allowed.")
+        return
+
+    import random
+    import datetime
+
+    drinks = ["milk tea", "matcha latte", "coffee", "chai", "oolong", "espresso"]
+    places = ["mcdonalds", "7leaves", "cow", "tenren", "philz", "blue bottle"]
+
+    current_year = datetime.datetime.now().year
+
+    total_entries = 0
+
+    # simulate ~180 entries across the year (adjust if you want)
+    for _ in range(180):
+
+        # pick random day in year
+        start = datetime.datetime(current_year, 1, 1)
+        end = datetime.datetime(current_year, 12, 31)
+
+        random_day = start + datetime.timedelta(
+            days=random.randint(0, (end - start).days)
+        )
+
+        # random time during that day
+        random_time = random_day + datetime.timedelta(
+            hours=random.randint(8, 22),
+            minutes=random.randint(0, 59),
+            seconds=random.randint(0, 59)
+        )
+
+        bevname = random.choice(drinks)
+        place = random.choice(places)
+        rating = random.randint(10, 20)
+
+        timestamp = int(random_time.timestamp())
+
+        cursor.execute("""
+            INSERT INTO entries (user_id, guild_id, name, place, rating, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (user_id, guild_id, bevname, place, rating, timestamp))
+
+        cursor.execute("""
+            INSERT INTO users (user_id, fav_bev, fav_spot, rank_name, total_bevs)
+            VALUES (?, ?, ?, ?, 0)
+            ON CONFLICT(user_id) DO NOTHING
+        """, (user_id, None, None, "Newbie"))
+
+        cursor.execute("""
+            UPDATE users
+            SET total_bevs = total_bevs + 1
+            WHERE user_id = ?
+        """, (user_id,))
+
+        cursor.execute("""
+            INSERT INTO server_places (guild_id, place, visits)
+            VALUES (?, ?, 1)
+            ON CONFLICT(guild_id, place)
+            DO UPDATE SET visits = visits + 1
+        """, (guild_id, place))
+
+        total_entries += 1
+
+    conn.commit()
+
+    await ctx.send(f"Populated {total_entries} realistic year-long bev entries 🍵")
+
+@bot.command()
+async def clear(ctx):
+    user_id = str(ctx.author.id)
+    guild_id = str(ctx.guild.id)
+
+    # safety lock
+    if ctx.author.name != "breadbit":
+        await ctx.send("Not allowed.")
+        return
+
+    cursor.execute("""
+        DELETE FROM entries
+        WHERE user_id = ? AND guild_id = ?
+    """, (user_id, guild_id))
+
+    cursor.execute("""
+        UPDATE users
+        SET total_bevs = 0,
+            fav_bev = NULL,
+            fav_spot = NULL
+        WHERE user_id = ?
+    """, (user_id,))
+
+    cursor.execute("""
+        DELETE FROM server_places
+        WHERE guild_id = ?
+    """, (guild_id,))
+
+    conn.commit()
+
+    await ctx.send("Cleared your test data 🧼")
 
 bot.run(token, log_handler=handler, log_level=logging.DEBUG)
