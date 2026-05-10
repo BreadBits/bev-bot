@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS entries (
     name TEXT,
     place TEXT,
     rating INTEGER,
-    time TEXT
+    timestamp INTEGER
 )
 """)
 
@@ -116,7 +116,22 @@ async def bev(ctx,*args):
         await ctx.send("Usage: !bev drink place rating (e.g. 8/10)")
         return
 
-    ratingraw = args[-1]
+    raw = " ".join(args)
+
+    if "," in raw:
+        main_part, date_part = raw.split(",", 1)
+        date_part = date_part.strip()
+    else:
+        main_part = raw
+        date_part = None
+
+    parts = main_part.split()
+
+    if len(parts) < 3:
+        await ctx.send("Usage: !bev drink place rating[, mm/dd/yy]")
+        return
+
+    ratingraw = parts[-1]
 
     try:
         rating = int(ratingraw.split("/")[0])#last argument
@@ -124,12 +139,23 @@ async def bev(ctx,*args):
         await ctx.send("Please enter a valid rating")
         return
 
-    place = args[-2].lower()
-    bevname = " ".join(args[:-2])
+    place = parts[-2].lower()
+    bevname = " ".join(parts[:-2])
 
     user_id = str(ctx.author.id)
     guild_id = str(ctx.guild.id)
-    current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    if date_part:
+        try:
+            dt = datetime.datetime.strptime(date_part, "%m/%d/%y")
+        except ValueError:
+            await ctx.send("Invalid date format. Use mm/dd/yy")
+            return
+    else:
+        dt = datetime.datetime.now()
+
+    timestamp = int(dt.timestamp())
+
 
     cursor.execute("""
         INSERT INTO users (user_id, fav_bev, fav_spot, rank_name, total_bevs)
@@ -138,9 +164,9 @@ async def bev(ctx,*args):
     """, (user_id, None, None, "Newbie"))
 
     cursor.execute("""
-        INSERT INTO entries (user_id, guild_id, name, place, rating, time)
+        INSERT INTO entries (user_id, guild_id, name, place, rating, timestamp)
         VALUES (?, ?, ?, ?, ?, ?)
-    """, (user_id, guild_id, bevname, place, rating, current_time))
+    """, (user_id, guild_id, bevname, place, rating, timestamp))
 
     cursor.execute("""
         UPDATE users
