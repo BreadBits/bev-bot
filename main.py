@@ -3,13 +3,19 @@ from discord.ext import commands
 import logging
 from dotenv import load_dotenv
 import os
-import json
-import datetime
 import random
-
 import sqlite3
-
 import quests
+
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import Preformatted
+from reportlab.lib.styles import ParagraphStyle
+from reportlab.lib import colors
+import datetime
+import io
 
 load_dotenv()
 token = os.getenv('DISCORD_TOKEN')
@@ -372,5 +378,78 @@ async def rolladd(ctx, region, *places):
     conn.commit()
 
     await ctx.send(f"Added to **{region}**: {', '.join(added)}")
+
+@bot.command()
+async def bevreport(ctx, year: int = None):
+    user_id = str(ctx.author.id)
+
+    if year is None:
+        year = datetime.datetime.now().year
+
+    cursor.execute("""
+        SELECT name, place, rating, timestamp
+        FROM entries
+        WHERE user_id = ?
+        AND strftime('%Y', datetime(timestamp, 'unixepoch')) = ?
+        ORDER BY timestamp ASC
+    """, (user_id, str(year)))
+
+    rows = cursor.fetchall()
+
+    if not rows:
+        await ctx.send("No entries found for that year.")
+        return
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter)
+
+    styles = getSampleStyleSheet()
+    title_style = styles["Title"]
+
+    elements = []
+
+    # TITLE
+    title = Paragraph(f"<b>BEV REPORT {year}</b>", title_style)
+    elements.append(title)
+    elements.append(Spacer(1, 20))
+
+    # TABLE DATA
+    text = ""
+    text += "==============================\n"
+    text += f"{year} BEV REPORT\n"
+    text += "==============================\n\n"
+    text += "-" * 40 + "\n\n"
+
+    for name, place, rating, ts in rows:
+        dt = datetime.datetime.fromtimestamp(ts)
+        date_str = dt.strftime("%m/%d")
+
+        line = f"{date_str:<6} {place:<15} {name:<15} {rating}/20"
+        text += line + "\n"
+
+    text += "\n" + "-" * 40 + "\n"
+    text += f"Total entries: {len(rows)}"
+
+    text += "\n------------------------------\n"
+    text += "Thanks for logging bevs"
+
+    receipt_style = ParagraphStyle(
+        name="Receipt",
+        fontName="Courier",
+        fontSize=9,
+        leading=12,
+        textColor=colors.black,
+    )
+
+    receipt = Preformatted(text, style=receipt_style)
+    elements.append(receipt)
+
+    doc.build(elements)
+
+    buffer.seek(0)
+
+    file = discord.File(buffer, filename=f"bevreport_{year}.pdf")
+
+    await ctx.send(file=file)
 
 bot.run(token, log_handler=handler, log_level=logging.DEBUG)

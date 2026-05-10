@@ -70,12 +70,7 @@ def check_perfect_performative(cursor, conn, user_id):
     total_places = cursor.fetchone()[0]
 
     if total_places >= 50:
-        return unlock_quest(
-            cursor,
-            conn,
-            user_id,
-            "Perfect Performative"
-        )
+        return unlock_quest(cursor, conn, user_id,"Perfect Performative")
 
     return False
 
@@ -110,12 +105,7 @@ def check_bevs4life(cursor, conn, user_id):
             break
 
     if streak >= 7:
-        return unlock_quest(
-            cursor,
-            conn,
-            user_id,
-            "Bevs4Life"
-        )
+        return unlock_quest(cursor, conn, user_id, "Bevs4Life")
 
     return False
 
@@ -130,9 +120,7 @@ def check_all_quests(cursor, conn, user_id):
     unlocked = []
 
     for quest_check in QUEST_CHECKS:
-
         result = quest_check(cursor, conn, user_id)
-
         if result:
             unlocked.append(result)
 
